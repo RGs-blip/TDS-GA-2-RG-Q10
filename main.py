@@ -48,30 +48,46 @@ def extract_vendor(text: str) -> str:
 
 
 def extract_amount(text: str) -> float:
-    # Convert a raw number such as "6,241.97" into 6241.97
     def to_float(raw: str) -> float:
         try:
             return float(raw.replace(",", ""))
         except ValueError:
             return -1.0
 
-    # Match numbers that look like money: 6241.97, 6,241.97, 6241, etc.
-    money_pattern = r"(?<![\w.])(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(?![\w])"
+    money = r"(?:[$€£]\s*)?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
 
-    # Highest-priority phrases: these normally identify the final amount owed.
-    priority_patterns = [
-        r"(?:total\s+due|amount\s+due|balance\s+due|total\s+payable|amount\s+payable|grand\s+total|total\s+amount\s+due)\s*[:\-]?\s*(?:[$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)",
-        r"(?:[$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)\s*(?:is\s+)?(?:due|payable)",
-        r"(?:total|amount)\s*[:\-]?\s*(?:[$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)",
+    # Each rule has a priority. Lower number = more trustworthy.
+    rules = [
+        # "Total due: 5,235.53", "Amount due: USD 5,235.53"
+        (1, r"(?:total\s+due|amount\s+due|balance\s+due|total\s+payable|amount\s+payable)\s*[:\-]?\s*" + money),
+        # "The total amount due is 5,235.53"
+        (1, r"(?:total\s+amount\s+due|total\s+due)\s+(?:is|of)\s+" + money),
+        # "Grand total: 5,235.53"
+        (2, r"grand\s+total\s*[:\-]?\s*" + money),
+        # "Total: 5,235.53" or "Amount: 5,235.53"
+        (3, r"(?:total|amount)\s*[:\-]?\s*" + money),
+        # "5,235.53 USD due" / "due: 5,235.53"
+        (4, r"(?:due|payable)\s*[:\-]?\s*" + money),
+        (4, money + r"\s*(?:is\s+)?(?:due|payable)"),
     ]
 
-    for pattern in priority_patterns:
-        matches = re.findall(pattern, text, flags=re.IGNORECASE)
-        valid = [to_float(m) for m in matches if to_float(m) >= 0]
-        if valid:
-            # If several matches exist, choose the last one;
-            # invoice totals often appear near the end.
-            return valid[-1]
+    candidates = []
+
+    for priority, pattern in rules:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            raw_value = match.group(1)
+            value = to_float(raw_value)
+
+            if 0 <= value <= 1_000_000:
+                candidates.append((priority, match.start(), value))
+
+    if not candidates:
+        return 0.0
+
+    # Prefer the strongest label. If tied, prefer the match that appears later,
+    # because invoice totals are usually near the bottom.
+    candidates.sort(key=lambda item: (item[0], -item[1]))
+    return candidates[0][2]
 
     # Fallback: choose the largest money-like number,
     # but ignore obvious date-like numbers.
