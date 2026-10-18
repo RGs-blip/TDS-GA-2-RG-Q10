@@ -48,24 +48,42 @@ def extract_vendor(text: str) -> str:
 
 
 def extract_amount(text: str) -> float:
-    # Find money-like values, including 1,234.56, 1234.56, and 1234.
-    matches = re.findall(r"(?<![\w.])(?:[$€£]\s*)?(\d{1,3}(?:[,\d]{0,12})(?:\.\d{1,2})?)(?![\w])", text)
-
-    candidates = []
-    for raw in matches:
-        cleaned = raw.replace(",", "")
+    # Convert a raw number such as "6,241.97" into 6241.97
+    def to_float(raw: str) -> float:
         try:
-            value = float(cleaned)
-            if 0 <= value <= 1_000_000:
-                candidates.append(value)
+            return float(raw.replace(",", ""))
         except ValueError:
-            pass
+            return -1.0
 
-    if not candidates:
-        return 0.0
+    # Match numbers that look like money: 6241.97, 6,241.97, 6241, etc.
+    money_pattern = r"(?<![\w.])(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(?![\w])"
 
-    # Prefer the largest amount, because invoices often list subtotal, tax, and total.
-    return max(candidates)
+    # Highest-priority phrases: these normally identify the final amount owed.
+    priority_patterns = [
+        r"(?:total\s+due|amount\s+due|balance\s+due|total\s+payable|amount\s+payable|grand\s+total|total\s+amount\s+due)\s*[:\-]?\s*(?:[$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)",
+        r"(?:[$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)\s*(?:is\s+)?(?:due|payable)",
+        r"(?:total|amount)\s*[:\-]?\s*(?:[$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)",
+    ]
+
+    for pattern in priority_patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
+        valid = [to_float(m) for m in matches if to_float(m) >= 0]
+        if valid:
+            # If several matches exist, choose the last one;
+            # invoice totals often appear near the end.
+            return valid[-1]
+
+    # Fallback: choose the largest money-like number,
+    # but ignore obvious date-like numbers.
+    matches = re.findall(money_pattern, text)
+    candidates = []
+
+    for raw in matches:
+        value = to_float(raw)
+        if 0 <= value <= 1_000_000:
+            candidates.append(value)
+
+    return max(candidates) if candidates else 0.0
 
 
 def extract_currency(text: str) -> str:
